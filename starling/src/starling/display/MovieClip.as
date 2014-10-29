@@ -1,7 +1,7 @@
 // =================================================================================================
 //
 //	Starling Framework
-//	Copyright 2011 Gamua OG. All Rights Reserved.
+//	Copyright 2011-2014 Gamua. All Rights Reserved.
 //
 //	This program is free software. You can redistribute and/or modify it
 //	in accordance with the terms of the accompanying license agreement.
@@ -32,7 +32,7 @@ package starling.display
      *  appears.</p>
      *  
      *  <p>The methods <code>play</code> and <code>pause</code> control playback of the movie. You
-     *  will receive an event of type <code>Event.MovieCompleted</code> when the movie finished
+     *  will receive an event of type <code>Event.COMPLETE</code> when the movie finished
      *  playback. If the movie is looping, the event is dispatched once per loop.</p>
      *  
      *  <p>As any animated object, a movie clip has to be added to a juggler (or have its 
@@ -49,36 +49,46 @@ package starling.display
         private var mStartTimes:Vector.<Number>;
         
         private var mDefaultFrameDuration:Number;
-        private var mTotalTime:Number;
         private var mCurrentTime:Number;
         private var mCurrentFrame:int;
         private var mLoop:Boolean;
         private var mPlaying:Boolean;
+        private var mMuted:Boolean;
         
-        /** Creates a moviclip from the provided textures and with the specified default framerate.
+        /** Creates a movie clip from the provided textures and with the specified default framerate.
          *  The movie will have the size of the first frame. */  
         public function MovieClip(textures:Vector.<Texture>, fps:Number=12)
-        {            
+        {
             if (textures.length > 0)
             {
                 super(textures[0]);
-                mDefaultFrameDuration = 1.0 / fps;
-                mLoop = true;
-                mPlaying = true;
-                mTotalTime = 0.0;
-                mCurrentTime = 0.0;
-                mCurrentFrame = 0;
-                mTextures = new <Texture>[];
-                mSounds = new <Sound>[];
-                mDurations = new <Number>[];
-                mStartTimes = new <Number>[];
-                
-                for each (var texture:Texture in textures)
-                    addFrame(texture);
+                init(textures, fps);
             }
             else
             {
                 throw new ArgumentError("Empty texture array");
+            }
+        }
+        
+        private function init(textures:Vector.<Texture>, fps:Number):void
+        {
+            if (fps <= 0) throw new ArgumentError("Invalid fps: " + fps);
+            var numFrames:int = textures.length;
+            
+            mDefaultFrameDuration = 1.0 / fps;
+            mLoop = true;
+            mPlaying = true;
+            mCurrentTime = 0.0;
+            mCurrentFrame = 0;
+            mTextures = textures.concat();
+            mSounds = new Vector.<Sound>(numFrames);
+            mDurations = new Vector.<Number>(numFrames);
+            mStartTimes = new Vector.<Number>(numFrames);
+            
+            for (var i:int=0; i<numFrames; ++i)
+            {
+                mDurations[i] = mDefaultFrameDuration;
+                mStartTimes[i] = i * mDefaultFrameDuration;
             }
         }
         
@@ -98,15 +108,14 @@ package starling.display
             if (frameID < 0 || frameID > numFrames) throw new ArgumentError("Invalid frame id");
             if (duration < 0) duration = mDefaultFrameDuration;
             
-            if (frameID > 0 && frameID == numFrames) 
-                mStartTimes[frameID] = mStartTimes[frameID-1] + mDurations[frameID-1];
-            else
-                updateStartTimes();
-            
             mTextures.splice(frameID, 0, texture);
             mSounds.splice(frameID, 0, sound);
             mDurations.splice(frameID, 0, duration);
-            mTotalTime += duration;
+            
+            if (frameID > 0 && frameID == numFrames) 
+                mStartTimes[frameID] = mStartTimes[int(frameID-1)] + mDurations[int(frameID-1)];
+            else
+                updateStartTimes();
         }
         
         /** Removes the frame at a certain ID. The successors will move down. */
@@ -114,10 +123,11 @@ package starling.display
         {
             if (frameID < 0 || frameID >= numFrames) throw new ArgumentError("Invalid frame id");
             if (numFrames == 1) throw new IllegalOperationError("Movie clip must not be empty");
-            mTotalTime -= getFrameDuration(frameID);
+            
             mTextures.splice(frameID, 1);
             mSounds.splice(frameID, 1);
             mDurations.splice(frameID, 1);
+            
             updateStartTimes();
         }
         
@@ -161,8 +171,6 @@ package starling.display
         public function setFrameDuration(frameID:int, duration:Number):void
         {
             if (frameID < 0 || frameID >= numFrames) throw new ArgumentError("Invalid frame id");
-            mTotalTime -= getFrameDuration(frameID);
-            mTotalTime += duration;
             mDurations[frameID] = duration;
             updateStartTimes();
         }
@@ -198,7 +206,7 @@ package starling.display
             mStartTimes[0] = 0;
             
             for (var i:int=1; i<numFrames; ++i)
-                mStartTimes[i] = mStartTimes[i-1] + mDurations[i-1];
+                mStartTimes[i] = mStartTimes[int(i-1)] + mDurations[int(i-1)];
         }
         
         // IAnimatable
@@ -206,62 +214,80 @@ package starling.display
         /** @inheritDoc */
         public function advanceTime(passedTime:Number):void
         {
-            if (mLoop && mCurrentTime == mTotalTime) mCurrentTime = 0.0;
-            if (!mPlaying || passedTime == 0.0 || mCurrentTime == mTotalTime) return;
+            if (!mPlaying || passedTime <= 0.0) return;
             
-            mCurrentTime += passedTime;
-            
-            var numFrames:int = mTextures.length;
+            var finalFrame:int;
             var previousFrame:int = mCurrentFrame;
+            var restTime:Number = 0.0;
+            var breakAfterFrame:Boolean = false;
+            var dispatchCompleteEvent:Boolean = false;
+            var totalTime:Number = this.totalTime;
             
-            while (mCurrentTime >= mStartTimes[mCurrentFrame] + mDurations[mCurrentFrame])
+            if (mLoop && mCurrentTime >= totalTime)
+            { 
+                mCurrentTime = 0.0; 
+                mCurrentFrame = 0; 
+            }
+            
+            if (mCurrentTime < totalTime)
             {
-                if (++mCurrentFrame == numFrames)
+                mCurrentTime += passedTime;
+                finalFrame = mTextures.length - 1;
+                
+                while (mCurrentTime > mStartTimes[mCurrentFrame] + mDurations[mCurrentFrame])
                 {
-                    if (hasEventListener(Event.COMPLETE))
+                    if (mCurrentFrame == finalFrame)
                     {
-                        dispatchEvent(new Event(Event.COMPLETE));
-                        
-                        // user might have stopped movie in event handler
-                        if (!mPlaying)
+                        if (mLoop && !hasEventListener(Event.COMPLETE))
                         {
-                            mCurrentTime = mTotalTime;
-                            mCurrentFrame = numFrames - 1;
-                            break;
+                            mCurrentTime -= totalTime;
+                            mCurrentFrame = 0;
                         }
-                    }
-                    
-                    if (mLoop)
-                    {
-                        mCurrentTime -= mTotalTime;
-                        mCurrentFrame = 0;
+                        else
+                        {
+                            breakAfterFrame = true;
+                            restTime = mCurrentTime - totalTime;
+                            dispatchCompleteEvent = true;
+                            mCurrentFrame = finalFrame;
+                            mCurrentTime = totalTime;
+                        }
                     }
                     else
                     {
-                        mCurrentTime = mTotalTime;
-                        mCurrentFrame = numFrames - 1;
-                        break;
+                        mCurrentFrame++;
                     }
+                    
+                    var sound:Sound = mSounds[mCurrentFrame];
+                    if (sound && !mMuted) sound.play();
+                    if (breakAfterFrame) break;
                 }
+                
+                // special case when we reach *exactly* the total time.
+                if (mCurrentFrame == finalFrame && mCurrentTime == totalTime)
+                    dispatchCompleteEvent = true;
             }
             
             if (mCurrentFrame != previousFrame)
-            {
                 texture = mTextures[mCurrentFrame];
-                if (mSounds[mCurrentFrame]) mSounds[mCurrentFrame].play();
-            }
-        }
-        
-        /** Indicates if a (non-looping) movie has come to its end. */
-        public function get isComplete():Boolean 
-        {
-            return !mLoop && mCurrentTime >= mTotalTime;
+            
+            if (dispatchCompleteEvent)
+                dispatchEventWith(Event.COMPLETE);
+            
+            if (mLoop && restTime > 0.0)
+                advanceTime(restTime);
         }
         
         // properties  
         
         /** The total duration of the clip in seconds. */
-        public function get totalTime():Number { return mTotalTime; }
+        public function get totalTime():Number 
+        {
+            var numFrames:int = mTextures.length;
+            return mStartTimes[int(numFrames-1)] + mDurations[int(numFrames-1)];
+        }
+        
+        /** The time that has passed since the clip was started (each loop starts at zero). */
+        public function get currentTime():Number { return mCurrentTime; }
         
         /** The total number of frames. */
         public function get numFrames():int { return mTextures.length; }
@@ -270,6 +296,11 @@ package starling.display
         public function get loop():Boolean { return mLoop; }
         public function set loop(value:Boolean):void { mLoop = value; }
         
+        /** If enabled, no new sounds will be started during playback. Sounds that are already
+         *  playing are not affected. */
+        public function get muted():Boolean { return mMuted; }
+        public function set muted(value:Boolean):void { mMuted = value; }
+
         /** The index of the frame that is currently displayed. */
         public function get currentFrame():int { return mCurrentFrame; }
         public function set currentFrame(value:int):void
@@ -281,7 +312,7 @@ package starling.display
                 mCurrentTime += getFrameDuration(i);
             
             texture = mTextures[mCurrentFrame];
-            if (mSounds[mCurrentFrame]) mSounds[mCurrentFrame].play();
+            if (!mMuted && mSounds[mCurrentFrame]) mSounds[mCurrentFrame].play();
         }
         
         /** The default number of frames per second. Individual frames can have different 
@@ -290,13 +321,17 @@ package starling.display
         public function get fps():Number { return 1.0 / mDefaultFrameDuration; }
         public function set fps(value:Number):void
         {
-            var newFrameDuration:Number = value == 0.0 ? Number.MAX_VALUE : 1.0 / value;
+            if (value <= 0) throw new ArgumentError("Invalid fps: " + value);
+            
+            var newFrameDuration:Number = 1.0 / value;
             var acceleration:Number = newFrameDuration / mDefaultFrameDuration;
             mCurrentTime *= acceleration;
             mDefaultFrameDuration = newFrameDuration;
             
-            for (var i:int=0; i<numFrames; ++i)
-                setFrameDuration(i, getFrameDuration(i) * acceleration);
+            for (var i:int=0; i<numFrames; ++i) 
+                mDurations[i] *= acceleration;
+
+            updateStartTimes();
         }
         
         /** Indicates if the clip is still playing. Returns <code>false</code> when the end 
@@ -304,9 +339,15 @@ package starling.display
         public function get isPlaying():Boolean 
         {
             if (mPlaying)
-                return mLoop || mCurrentTime < mTotalTime;
+                return mLoop || mCurrentTime < totalTime;
             else
                 return false;
+        }
+
+        /** Indicates if a (non-looping) movie has come to its end. */
+        public function get isComplete():Boolean
+        {
+            return !mLoop && mCurrentTime >= totalTime;
         }
     }
 }

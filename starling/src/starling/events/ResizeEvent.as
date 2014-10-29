@@ -1,7 +1,7 @@
 // =================================================================================================
 //
 //	Starling Framework
-//	Copyright 2011 Gamua OG. All Rights Reserved.
+//	Copyright 2011-2014 Gamua. All Rights Reserved.
 //
 //	This program is free software. You can redistribute and/or modify it
 //	in accordance with the terms of the accompanying license agreement.
@@ -10,6 +10,8 @@
 
 package starling.events
 {
+    import flash.geom.Point;
+    
     /** A ResizeEvent is dispatched by the stage when the size of the Flash container changes.
      *  Use it to update the Starling viewport and the stage size.
      *  
@@ -22,26 +24,21 @@ package starling.events
      *  @see starling.display.Stage
      *  @see starling.core.Starling
      */
-	public class ResizeEvent extends Event
-	{
-		/** Event type for a resized Flash player. */
+    public class ResizeEvent extends Event
+    {
+        /** Event type for a resized Flash player. */
         public static const RESIZE:String = "resize";
-		
-		private var mWidth:int;
-		private var mHeight:int;
-		
+        
         /** Creates a new ResizeEvent. */
-		public function ResizeEvent(type:String, width:int, height:int, bubbles:Boolean=false)
-		{
-			super(type, bubbles);
-			mWidth = width;
-			mHeight = height;
-		}
-		
+        public function ResizeEvent(type:String, width:int, height:int, bubbles:Boolean=false)
+        {
+        	super(type, bubbles, new Point(width, height));
+        }
+        
         /** The updated width of the player. */
-		public function get width():int { return mWidth; }
+        public function get width():int { return (data as Point).x; }
         
         /** The updated height of the player. */
-		public function get height():int { return mHeight; }
+        public function get height():int { return (data as Point).y; }
 	}
 }

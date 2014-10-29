@@ -1,7 +1,7 @@
 // =================================================================================================
 //
 //	Starling Framework
-//	Copyright 2011 Gamua OG. All Rights Reserved.
+//	Copyright 2011-2014 Gamua. All Rights Reserved.
 //
 //	This program is free software. You can redistribute and/or modify it
 //	in accordance with the terms of the accompanying license agreement.
@@ -11,12 +11,14 @@
 package starling.display
 {
     import flash.geom.Matrix;
+    import flash.geom.Matrix3D;
+    import flash.geom.Point;
     import flash.geom.Rectangle;
     import flash.geom.Vector3D;
     
     import starling.core.RenderSupport;
     import starling.utils.VertexData;
-
+    
     /** A Quad represents a rectangle with a uniform color or a color gradient.
      *  
      *  <p>You can set one color per vertex. The colors will smoothly fade into each other over the area
@@ -35,12 +37,17 @@ package starling.display
      */
     public class Quad extends DisplayObject
     {
+        private var mTinted:Boolean;
+        
         /** The raw vertex data of the quad. */
         protected var mVertexData:VertexData;
         
         /** Helper objects. */
-        private static var sHelperVector:Vector3D = new Vector3D();
+        private static var sHelperPoint:Point = new Point();
+        private static var sHelperPoint3D:Vector3D = new Vector3D();
+        private static var sHelperRect:Rectangle = new Rectangle();
         private static var sHelperMatrix:Matrix = new Matrix();
+        private static var sHelperMatrix3D:Matrix3D = new Matrix3D();
         
         /** Creates a quad with a certain size and color. The last parameter controls if the 
          *  alpha value should be premultiplied into the color values on rendering, which can
@@ -48,20 +55,25 @@ package starling.display
         public function Quad(width:Number, height:Number, color:uint=0xffffff,
                              premultipliedAlpha:Boolean=true)
         {
+            if (width == 0.0 || height == 0.0)
+                throw new ArgumentError("Invalid size: width and height must not be zero");
+
+            mTinted = color != 0xffffff;
+            
             mVertexData = new VertexData(4, premultipliedAlpha);
-            updateVertexData(width, height, color, premultipliedAlpha);    
-        }
-        
-        /** Updates the vertex data with specific values for dimensions and color. */
-        protected function updateVertexData(width:Number, height:Number, color:uint,
-                                            premultipliedAlpha:Boolean):void
-        {
-            mVertexData.setPremultipliedAlpha(premultipliedAlpha);
             mVertexData.setPosition(0, 0.0, 0.0);
             mVertexData.setPosition(1, width, 0.0);
             mVertexData.setPosition(2, 0.0, height);
-            mVertexData.setPosition(3, width, height);            
+            mVertexData.setPosition(3, width, height);
             mVertexData.setUniformColor(color);
+            
+            onVertexDataChanged();
+        }
+        
+        /** Call this method after manually changing the contents of 'mVertexData'. */
+        protected function onVertexDataChanged():void
+        {
+            // override in subclasses, if necessary
         }
         
         /** @inheritDoc */
@@ -71,20 +83,24 @@ package starling.display
             
             if (targetSpace == this) // optimization
             {
-                mVertexData.getPosition(3, sHelperVector);
-                resultRect.x = resultRect.y = 0.0;
-                resultRect.width  = sHelperVector.x;
-                resultRect.height = sHelperVector.y;
+                mVertexData.getPosition(3, sHelperPoint);
+                resultRect.setTo(0.0, 0.0, sHelperPoint.x, sHelperPoint.y);
             }
             else if (targetSpace == parent && rotation == 0.0) // optimization
             {
                 var scaleX:Number = this.scaleX;
                 var scaleY:Number = this.scaleY;
-                mVertexData.getPosition(3, sHelperVector);
-                resultRect.x = x - pivotX * scaleX;
-                resultRect.y = y - pivotY * scaleY;
-                resultRect.width  = sHelperVector.x * scaleX;
-                resultRect.height = sHelperVector.y * scaleY;
+                mVertexData.getPosition(3, sHelperPoint);
+                resultRect.setTo(x - pivotX * scaleX,      y - pivotY * scaleY,
+                                 sHelperPoint.x * scaleX, sHelperPoint.y * scaleY);
+                if (scaleX < 0) { resultRect.width  *= -1; resultRect.x -= resultRect.width;  }
+                if (scaleY < 0) { resultRect.height *= -1; resultRect.y -= resultRect.height; }
+            }
+            else if (is3D && stage)
+            {
+                stage.getCameraPosition(targetSpace, sHelperPoint3D);
+                getTransformationMatrix3D(targetSpace, sHelperMatrix3D);
+                mVertexData.getBoundsProjected(sHelperMatrix3D, sHelperPoint3D, 0, 4, resultRect);
             }
             else
             {
@@ -105,6 +121,10 @@ package starling.display
         public function setVertexColor(vertexID:int, color:uint):void
         {
             mVertexData.setColor(vertexID, color);
+            onVertexDataChanged();
+            
+            if (color != 0xffffff) mTinted = true;
+            else mTinted = mVertexData.tinted;
         }
         
         /** Returns the alpha value of a vertex at a certain index. */
@@ -117,6 +137,10 @@ package starling.display
         public function setVertexAlpha(vertexID:int, alpha:Number):void
         {
             mVertexData.setAlpha(vertexID, alpha);
+            onVertexDataChanged();
+            
+            if (alpha != 1.0) mTinted = true;
+            else mTinted = mVertexData.tinted;
         }
         
         /** Returns the color of the quad, or of vertex 0 if vertices have different colors. */
@@ -128,8 +152,20 @@ package starling.display
         /** Sets the colors of all vertices to a certain value. */
         public function set color(value:uint):void 
         {
-            for (var i:int=0; i<4; ++i)
-                setVertexColor(i, value);
+            mVertexData.setUniformColor(value);
+            onVertexDataChanged();
+            
+            if (value != 0xffffff || alpha != 1.0) mTinted = true;
+            else mTinted = mVertexData.tinted;
+        }
+        
+        /** @inheritDoc **/
+        public override function set alpha(value:Number):void
+        {
+            super.alpha = value;
+            
+            if (value < 1.0) mTinted = true;
+            else mTinted = mVertexData.tinted;
         }
         
         /** Copies the raw vertex data to a VertexData instance. */
@@ -138,10 +174,25 @@ package starling.display
             mVertexData.copyTo(targetData, targetVertexID);
         }
         
-        /** @inheritDoc */
-        public override function render(support:RenderSupport, alpha:Number):void
+        /** Transforms the vertex positions of the raw vertex data by a certain matrix and
+         *  copies the result to another VertexData instance. */
+        public function copyVertexDataTransformedTo(targetData:VertexData, targetVertexID:int=0,
+                                                    matrix:Matrix=null):void
         {
-            support.batchQuad(this, alpha);
+            mVertexData.copyTransformedTo(targetData, targetVertexID, matrix, 0, 4);
         }
+        
+        /** @inheritDoc */
+        public override function render(support:RenderSupport, parentAlpha:Number):void
+        {
+            support.batchQuad(this, parentAlpha);
+        }
+        
+        /** Returns true if the quad (or any of its vertices) is non-white or non-opaque. */
+        public function get tinted():Boolean { return mTinted; }
+        
+        /** Indicates if the rgb values are stored premultiplied with the alpha value; this can
+         *  affect the rendering. (Most developers don't have to care, though.) */
+        public function get premultipliedAlpha():Boolean { return mVertexData.premultipliedAlpha; }
     }
 }

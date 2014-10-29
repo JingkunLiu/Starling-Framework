@@ -1,7 +1,7 @@
 // =================================================================================================
 //
 //	Starling Framework
-//	Copyright 2011 Gamua OG. All Rights Reserved.
+//	Copyright 2011-2014 Gamua. All Rights Reserved.
 //
 //	This program is free software. You can redistribute and/or modify it
 //	in accordance with the terms of the accompanying license agreement.
@@ -11,6 +11,7 @@
 package starling.display
 {
     import flash.display.Bitmap;
+    import flash.geom.Matrix;
     import flash.geom.Point;
     import flash.geom.Rectangle;
     
@@ -41,6 +42,7 @@ package starling.display
         private var mSmoothing:String;
         
         private var mVertexDataCache:VertexData;
+        private var mVertexDataCacheInvalid:Boolean;
         
         /** Creates a quad with a texture mapped onto it. */
         public function Image(texture:Texture)
@@ -54,40 +56,33 @@ package starling.display
                 
                 super(width, height, 0xffffff, pma);
                 
+                mVertexData.setTexCoords(0, 0.0, 0.0);
+                mVertexData.setTexCoords(1, 1.0, 0.0);
+                mVertexData.setTexCoords(2, 0.0, 1.0);
+                mVertexData.setTexCoords(3, 1.0, 1.0);
+                
                 mTexture = texture;
                 mSmoothing = TextureSmoothing.BILINEAR;
                 mVertexDataCache = new VertexData(4, pma);
-                
-                updateVertexDataCache();
+                mVertexDataCacheInvalid = true;
             }
             else
             {
-                throw new ArgumentError("Texture cannot be null");                
+                throw new ArgumentError("Texture cannot be null");
             }
         }
         
         /** Creates an Image with a texture that is created from a bitmap object. */
-        public static function fromBitmap(bitmap:Bitmap):Image
+        public static function fromBitmap(bitmap:Bitmap, generateMipMaps:Boolean=true, 
+                                          scale:Number=1):Image
         {
-            return new Image(Texture.fromBitmap(bitmap));
+            return new Image(Texture.fromBitmap(bitmap, generateMipMaps, false, scale));
         }
         
         /** @inheritDoc */
-        protected override function updateVertexData(width:Number, height:Number, color:uint,
-                                                     premultipliedAlpha:Boolean):void
+        protected override function onVertexDataChanged():void
         {
-            super.updateVertexData(width, height, color, premultipliedAlpha);
-            
-            mVertexData.setTexCoords(0, 0.0, 0.0);
-            mVertexData.setTexCoords(1, 1.0, 0.0);
-            mVertexData.setTexCoords(2, 0.0, 1.0);
-            mVertexData.setTexCoords(3, 1.0, 1.0);
-        }
-        
-        private function updateVertexDataCache():void
-        {
-            mVertexData.copyTo(mVertexDataCache);
-            mTexture.adjustVertexData(mVertexDataCache, 0, 4);
+            mVertexDataCacheInvalid = true;
         }
         
         /** Readjusts the dimensions of the image according to its current texture. Call this method 
@@ -103,29 +98,55 @@ package starling.display
             mVertexData.setPosition(2, 0.0, height);
             mVertexData.setPosition(3, width, height); 
             
-            updateVertexDataCache();
+            onVertexDataChanged();
         }
         
         /** Sets the texture coordinates of a vertex. Coordinates are in the range [0, 1]. */
         public function setTexCoords(vertexID:int, coords:Point):void
         {
             mVertexData.setTexCoords(vertexID, coords.x, coords.y);
-            updateVertexDataCache();
+            onVertexDataChanged();
         }
         
-        /** Gets the texture coordinates of a vertex. Coordinates are in the range [0, 1]. */
-        public function getTexCoords(vertexID:int):Point
+        /** Sets the texture coordinates of a vertex. Coordinates are in the range [0, 1]. */
+        public function setTexCoordsTo(vertexID:int, u:Number, v:Number):void
         {
-            var coords:Point = new Point();
-            mVertexData.getTexCoords(vertexID, coords);
-            return coords;
+            mVertexData.setTexCoords(vertexID, u, v);
+            onVertexDataChanged();
+        }
+        
+        /** Gets the texture coordinates of a vertex. Coordinates are in the range [0, 1]. 
+         *  If you pass a 'resultPoint', the result will be stored in this point instead of 
+         *  creating a new object.*/
+        public function getTexCoords(vertexID:int, resultPoint:Point=null):Point
+        {
+            if (resultPoint == null) resultPoint = new Point();
+            mVertexData.getTexCoords(vertexID, resultPoint);
+            return resultPoint;
         }
         
         /** Copies the raw vertex data to a VertexData instance.
          *  The texture coordinates are already in the format required for rendering. */ 
         public override function copyVertexDataTo(targetData:VertexData, targetVertexID:int=0):void
         {
-            mVertexDataCache.copyTo(targetData, targetVertexID);
+            copyVertexDataTransformedTo(targetData, targetVertexID, null);
+        }
+        
+        /** Transforms the vertex positions of the raw vertex data by a certain matrix
+         *  and copies the result to another VertexData instance.
+         *  The texture coordinates are already in the format required for rendering. */
+        public override function copyVertexDataTransformedTo(targetData:VertexData,
+                                                             targetVertexID:int=0,
+                                                             matrix:Matrix=null):void
+        {
+            if (mVertexDataCacheInvalid)
+            {
+                mVertexDataCacheInvalid = false;
+                mVertexData.copyTo(mVertexDataCache);
+                mTexture.adjustVertexData(mVertexDataCache, 0, 4);
+            }
+            
+            mVertexDataCache.copyTransformedTo(targetData, targetVertexID, matrix, 0, 4);
         }
         
         /** The texture that is displayed on the quad. */
@@ -140,7 +161,8 @@ package starling.display
             {
                 mTexture = value;
                 mVertexData.setPremultipliedAlpha(mTexture.premultipliedAlpha);
-                updateVertexDataCache();
+                mVertexDataCache.setPremultipliedAlpha(mTexture.premultipliedAlpha, false);
+                onVertexDataChanged();
             }
         }
         
@@ -157,23 +179,9 @@ package starling.display
         }
         
         /** @inheritDoc */
-        public override function setVertexColor(vertexID:int, color:uint):void
+        public override function render(support:RenderSupport, parentAlpha:Number):void
         {
-            super.setVertexColor(vertexID, color);
-            updateVertexDataCache();
-        }
-        
-        /** @inheritDoc */
-        public override function setVertexAlpha(vertexID:int, alpha:Number):void
-        {
-            super.setVertexAlpha(vertexID, alpha);
-            updateVertexDataCache();
-        }
-        
-        /** @inheritDoc */
-        public override function render(support:RenderSupport, alpha:Number):void
-        {
-            support.batchQuad(this, alpha, mTexture, mSmoothing);
+            support.batchQuad(this, parentAlpha, mTexture, mSmoothing);
         }
     }
 }

@@ -1,7 +1,7 @@
 // =================================================================================================
 //
 //	Starling Framework
-//	Copyright 2011 Gamua OG. All Rights Reserved.
+//	Copyright 2011-2014 Gamua. All Rights Reserved.
 //
 //	This program is free software. You can redistribute and/or modify it
 //	in accordance with the terms of the accompanying license agreement.
@@ -10,6 +10,7 @@
 
 package starling.animation
 {
+    import starling.core.starling_internal;
     import starling.events.Event;
     import starling.events.EventDispatcher;
 
@@ -25,18 +26,28 @@ package starling.animation
      */ 
     public class DelayedCall extends EventDispatcher implements IAnimatable
     {
-        private var mCurrentTime:Number = 0;
+        private var mCurrentTime:Number;
         private var mTotalTime:Number;
         private var mCall:Function;
         private var mArgs:Array;
-        private var mRepeatCount:int = 1;
+        private var mRepeatCount:int;
         
         /** Creates a delayed call. */
         public function DelayedCall(call:Function, delay:Number, args:Array=null)
         {
-            mCall = call;
+            reset(call, delay, args);
+        }
+        
+        /** Resets the delayed call to its default values, which is useful for pooling. */
+        public function reset(call:Function, delay:Number, args:Array=null):DelayedCall
+        {
+            mCurrentTime = 0;
             mTotalTime = Math.max(delay, 0.0001);
+            mCall = call;
             mArgs = args;
+            mRepeatCount = 1;
+            
+            return this;
         }
         
         /** @inheritDoc */
@@ -47,17 +58,24 @@ package starling.animation
             
             if (previousTime < mTotalTime && mCurrentTime >= mTotalTime)
             {                
-                mCall.apply(null, mArgs);
-                
-                if (mRepeatCount > 1)
+                if (mRepeatCount == 0 || mRepeatCount > 1)
                 {
-                    mRepeatCount -= 1;
+                    mCall.apply(null, mArgs);
+                    
+                    if (mRepeatCount > 0) mRepeatCount -= 1;
                     mCurrentTime = 0;
                     advanceTime((previousTime + time) - mTotalTime);
                 }
                 else
                 {
-                    dispatchEvent(new Event(Event.REMOVE_FROM_JUGGLER));
+                    // save call & args: they might be changed through an event listener
+                    var call:Function = mCall;
+                    var args:Array = mArgs;
+                    
+                    // in the callback, people might want to call "reset" and re-add it to the
+                    // juggler; so this event has to be dispatched *before* executing 'call'.
+                    dispatchEventWith(Event.REMOVE_FROM_JUGGLER);
+                    call.apply(null, args);
                 }
             }
         }
@@ -74,8 +92,31 @@ package starling.animation
         /** The time that has already passed (in seconds). */
         public function get currentTime():Number { return mCurrentTime; }
         
-        /** The number of times the call will be repeated. */
+        /** The number of times the call will be repeated. 
+         *  Set to '0' to repeat indefinitely. @default 1 */
         public function get repeatCount():int { return mRepeatCount; }
         public function set repeatCount(value:int):void { mRepeatCount = value; }
+        
+        // delayed call pooling
+        
+        private static var sPool:Vector.<DelayedCall> = new <DelayedCall>[];
+        
+        /** @private */
+        starling_internal static function fromPool(call:Function, delay:Number, 
+                                                   args:Array=null):DelayedCall
+        {
+            if (sPool.length) return sPool.pop().reset(call, delay, args);
+            else return new DelayedCall(call, delay, args);
+        }
+        
+        /** @private */
+        starling_internal static function toPool(delayedCall:DelayedCall):void
+        {
+            // reset any object-references, to make sure we don't prevent any garbage collection
+            delayedCall.mCall = null;
+            delayedCall.mArgs = null;
+            delayedCall.removeEventListeners();
+            sPool.push(delayedCall);
+        }
     }
 }
